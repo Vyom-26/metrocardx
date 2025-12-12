@@ -1,62 +1,108 @@
 pipeline {
-  agent any
-  environment { BUILD_TS = "" }
-  stages {
-    stage('Env check') {
-      steps {
-        script {
-          def pyPath = sh(script: 'which python3 || true', returnStdout: true).trim()
-          if (!pyPath) { error "python3 not found in PATH on agent. Install python3 or use an agent with python3." }
-          echo "python3 found: ${pyPath}"
+    agent any
+
+    environment {
+        LOG_DIR = "/tmp/metrocardx-builds"
+    }
+
+    stages {
+
+        stage('Checkout SCM') {
+            steps {
+                checkout scm
+            }
         }
-      }
+
+        stage('Env check') {
+            steps {
+                sh '''
+                    echo "Checking for python3..."
+                    which python3 || { echo "python3 not found"; exit 1; }
+                    python3 --version
+                '''
+            }
+        }
+
+        stage('Prepare') {
+            steps {
+                sh '''
+                    echo "Preparing workspace..."
+                    mkdir -p reports
+                    mkdir -p ${LOG_DIR}
+                '''
+            }
+        }
+
+        stage('Build') {
+            steps {
+                sh '''
+                    TS=$(date +%Y%m%d%H%M%S)
+                    echo "Build TS=$TS"
+
+                    python3 -m venv venv
+                    . venv/bin/activate
+
+                    pip install --upgrade pip
+                    if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+                    echo "Build completed at ${TS}" | tee reports/build-${TS}.log
+                '''
+            }
+        }
+
+        stage('Test') {
+            steps {
+                sh '''
+                    TS=$(date +%Y%m%d%H%M%S)
+                    echo "Running tests (TS=${TS})"
+
+                    . venv/bin/activate
+
+                    python3 -m unittest discover -v tests -p "test_*.py" 2>&1 | tee reports/test-${TS}.log
+                    rc=${PIPESTATUS[0]}
+
+                    cp reports/test-${TS}.log ${LOG_DIR}/test-${TS}.log || true
+
+                    if [ $rc -ne 0 ]; then
+                        echo "Tests failed (rc=$rc)"
+                        exit $rc
+                    fi
+                '''
+            }
+        }
+
+        stage('Validate') {
+            steps {
+                sh '''
+                    TS=$(date +%Y%m%d%H%M%S)
+                    echo "Validating metrocard module..."
+
+                    . venv/bin/activate
+
+                    python3 -c "import metrocard; print('metrocard OK')" 2>&1 | tee reports/validate-${TS}.log
+
+                    cp reports/validate-${TS}.log ${LOG_DIR}/validate-${TS}.log || true
+                '''
+            }
+        }
+
+        stage('Archive Logs') {
+            steps {
+                archiveArtifacts artifacts: "reports/*-*.log", fingerprint: true
+            }
+        }
     }
-    stage('Checkout') { steps { checkout scm } }
-    stage('Prepare') {
-      steps { script {
-        BUILD_TS = sh(script: "date +%Y%m%d%H%M%S", returnStdout: true).trim()
-        env.BUILD_TS = BUILD_TS
-        echo "Using timestamp: ${BUILD_TS}"
-      } }
-    }
-    stage('Build') {
-      steps { sh '''
-        python3 -m venv venv || true
-        . venv/bin/activate
-        pip install --upgrade pip || true
-        pip install -r requirements.txt || true
-      ''' }
-    }
-    stage('Test') {
-      steps { sh '''
-        . venv/bin/activate
-        mkdir -p reports
-        python3 -m unittest discover -v 2>&1 | tee reports/test-${BUILD_TS}.log
-      ''' }
-      post {
+
+    post {
         always {
-          sh '''
-            mkdir -p /tmp/metrocardx-builds
-            cp -r reports/test-${BUILD_TS}.log /tmp/metrocardx-builds/test-${BUILD_TS}.log
-            ls -l /tmp/metrocardx-builds || true
-          '''
-          archiveArtifacts artifacts: "reports/test-${BUILD_TS}.log", fingerprint: true
+            sh '''
+                echo "=== Reports Directory ==="
+                ls -la reports || true
+
+                echo "=== /tmp/metrocardx-builds Directory ==="
+                ls -la ${LOG_DIR} || true
+            '''
+            echo "Pipeline finished — check archived artifacts."
         }
-      }
     }
-    stage('Validate') {
-      steps { sh 'python3 -c "from metrocard import calculate_recharge; print(calculate_recharge(5,10,0.1))"' }
-    }
-    stage('Archive') {
-      steps { sh '''
-        mkdir -p /tmp/metrocardx-builds/${BUILD_TS}
-        cp -r . /tmp/metrocardx-builds/${BUILD_TS}/ || true
-        echo "Artifacts copied to /tmp/metrocardx-builds/${BUILD_TS}"
-      ''' }
-    }
-  }
-  post {
-    failure { echo "Build failed. See archived logs in /tmp/metrocardx-builds" }
-    success { echo "Pipeline finished successfully. Logs in /tmp/metrocardx-builds" }
-  }
 }
