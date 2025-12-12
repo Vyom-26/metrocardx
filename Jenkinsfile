@@ -58,9 +58,13 @@ pipeline {
 
                     . venv/bin/activate
 
-                    python3 -m unittest discover -v tests -p "test_*.py" 2>&1 | tee reports/test-${TS}.log
-                    rc=${PIPESTATUS[0]}
+                    # run tests and save output to a log file (POSIX friendly, avoids bash-only PIPESTATUS)
+                    python3 -m unittest discover -v tests -p "test_*.py" > reports/test-${TS}.log 2>&1
+                    rc=$?
+                    # print the log so Jenkins console shows it
+                    cat reports/test-${TS}.log || true
 
+                    # copy to persistent host path
                     cp reports/test-${TS}.log ${LOG_DIR}/test-${TS}.log || true
 
                     if [ $rc -ne 0 ]; then
@@ -79,7 +83,8 @@ pipeline {
 
                     . venv/bin/activate
 
-                    python3 -c "import metrocard; print('metrocard OK')" 2>&1 | tee reports/validate-${TS}.log
+                    python3 -c "import metrocard; print('metrocard OK')" > reports/validate-${TS}.log 2>&1
+                    cat reports/validate-${TS}.log || true
 
                     cp reports/validate-${TS}.log ${LOG_DIR}/validate-${TS}.log || true
                 '''
